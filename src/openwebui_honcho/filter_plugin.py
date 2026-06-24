@@ -31,9 +31,12 @@ LOG_MEM = logging.getLogger("openwebui_honcho.memories")
 
 # Honcho self-card facts do not carry per-fact timestamps — the dreaming agent
 # maintains the card as an ordered list without creation/modification metadata.
-# We expose these fields as None so the frontend can distinguish Honcho-backed
-# memories from ChromaDB memories (which do have timestamps).
-_HONCHO_TIMESTAMP_NONE = None  # explicit: no per-fact timestamp available
+# Upstream Open WebUI's MemoryModel requires `created_at: int` and `updated_at: int`
+# (epoch seconds).  We use 0 (Unix epoch) to signal "no timestamp available" so
+# the response passes FastAPI response_model validation without fabricating
+# authoritative dates.  The frontend renders this as Jan 1, 1970 which is
+# honest about the absence of real per-fact timestamps.
+_HONCHO_TS_UNKNOWN = 0  # epoch int — no per-fact timestamp available
 
 
 def _fact_hash(fact: str) -> str:
@@ -50,15 +53,19 @@ def _card_to_memories(facts: list[str], user_id: str) -> list[dict[str, Any]]:
     so that stale row mutations can be detected: if the fact at index N no longer
     matches the hash embedded in the ID, the mutation is rejected rather than
     silently applied to the wrong fact.
+
+    ``created_at`` / ``updated_at`` are set to 0 (epoch) because the Honcho
+    self-card has no per-fact timestamps.  This satisfies the upstream
+    ``MemoryModel`` integer type constraint without pretending the data is
+    authoritative.
     """
     return [
         {
             "id": f"honcho_{i}__{_fact_hash(fact)}",
             "content": fact,
             "user_id": user_id,
-            "created_at": _HONCHO_TIMESTAMP_NONE,
-            "updated_at": _HONCHO_TIMESTAMP_NONE,
-            "source": "honcho",
+            "created_at": _HONCHO_TS_UNKNOWN,
+            "updated_at": _HONCHO_TS_UNKNOWN,
         }
         for i, fact in enumerate(facts)
     ]
@@ -88,11 +95,16 @@ if _HAS_OPENWEBUI:
         form_data: AddMemoryForm,
         user=Depends(get_verified_user),
     ):
-        """Add a fact to the user's Honcho self-card."""
+        """Add a fact to the user's Honcho self-card.
+
+        Upstream ``response_model=MemoryModel | None`` — we return the new
+        memory entry (last in the card after append), not the full list.
+        """
         config = _require_config()
         service = HonchoService(config)
         facts = await service.edit_user_peer_card(user.id, lambda card: card + [form_data.content])
-        return _card_to_memories(facts, user.id)
+        all_memories = _card_to_memories(facts, user.id)
+        return all_memories[-1] if all_memories else None
 
     async def _honcho_query_memory(
         request: Request,
@@ -124,21 +136,29 @@ if _HAS_OPENWEBUI:
         config = _require_config()
         service = HonchoService(config)
         await service.edit_user_peer_card(user.id, lambda _card: [])
-        return {"ok": True}
+        return True
 
     async def _honcho_delete_memory(memory_id: str, user=Depends(get_verified_user)):
-        """Delete a single fact from the user's Honcho self-card."""
+        """Delete a single fact from the user's Honcho self-card.
+
+        Upstream ``response_model=bool`` — return True on success, False if the
+        ID was stale or invalid.
+        """
         config = _require_config()
         service = HonchoService(config)
 
+        deleted = False
+
         def editor(facts: list[str]) -> list[str]:
+            nonlocal deleted
             index = _memory_index(memory_id, facts)
             if index is not None:
                 facts.pop(index)
+                deleted = True
             return facts
 
         await service.edit_user_peer_card(user.id, editor)
-        return {"ok": True}
+        return deleted
 
     class MemoryUpdateForm(BaseModel):
         content: str
@@ -149,25 +169,39 @@ if _HAS_OPENWEBUI:
         form_data: MemoryUpdateForm,
         user=Depends(get_verified_user),
     ):
-        """Replace a single fact in the user's Honcho self-card by index."""
+        """Replace a single fact in the user's Honcho self-card.
+
+        Upstream ``response_model=MemoryModel | None`` — return the updated
+        entry or None if the ID was stale/invalid.
+        """
         config = _require_config()
         service = HonchoService(config)
 
+        updated_index = None
+
         def editor(facts: list[str]) -> list[str]:
+            nonlocal updated_index
             index = _memory_index(memory_id, facts)
             if index is not None:
                 facts[index] = form_data.content
+                updated_index = index
             return facts
 
         facts = await service.edit_user_peer_card(user.id, editor)
-        return _card_to_memories(facts, user.id)
+        if updated_index is None:
+            return None
+        all_memories = _card_to_memories(facts, user.id)
+        return all_memories[updated_index]
 
     async def _honcho_reset_memories(user=Depends(get_verified_user)):
-        """Clear all facts from the user's Honcho self-card."""
+        """Clear all facts from the user's Honcho self-card.
+
+        Upstream ``response_model=bool``.
+        """
         config = _require_config()
         service = HonchoService(config)
         await service.edit_user_peer_card(user.id, lambda _card: [])
-        return {"ok": True}
+        return True
 
     def _memory_index(memory_id: str, facts: list[str]) -> int | None:
         """Parse and validate a honcho_N__hash memory ID against the current facts.

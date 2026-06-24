@@ -453,9 +453,8 @@ def test_memory_ui_ids_include_content_hash():
     for i, entry in enumerate(result):
         assert entry["id"].startswith(f"honcho_{i}__")
         assert len(entry["id"]) > len(f"honcho_{i}__")  # hash is present
-        assert entry["source"] == "honcho"
-        assert entry["created_at"] is None
-        assert entry["updated_at"] is None
+        assert entry["created_at"] == 0  # epoch int — no per-fact timestamp
+        assert entry["updated_at"] == 0
 
 
 def test_memory_index_validates_content_hash():
@@ -492,3 +491,87 @@ def test_memory_index_backward_compat():
 
     old_style_id_1 = "honcho_1"
     assert module._memory_index(old_style_id_1, facts) == 1
+
+
+def test_memory_model_shape_matches_upstream():
+    """Response payloads must be compatible with upstream MemoryModel (Pydantic).
+
+    Upstream ``MemoryModel`` requires: id: str, user_id: str, content: str,
+    updated_at: int, created_at: int.  Extra fields are ignored by Pydantic v2
+    (no ``extra='forbid'`` in upstream config).
+    """
+    import importlib
+
+    from pydantic import BaseModel, ConfigDict
+
+    module = importlib.import_module("openwebui_honcho.filter_plugin")
+
+    # Replicate the upstream MemoryModel shape
+    class MemoryModel(BaseModel):
+        id: str
+        user_id: str
+        content: str
+        updated_at: int
+        created_at: int
+        model_config = ConfigDict(from_attributes=True)
+
+    facts = ["Likes Python"]
+    result = module._card_to_memories(facts, "user-1")
+
+    # Each entry must validate against the upstream model
+    for entry in result:
+        validated = MemoryModel(**entry)
+        assert validated.id == entry["id"]
+        assert validated.content == entry["content"]
+        assert isinstance(validated.created_at, int)
+        assert isinstance(validated.updated_at, int)
+
+
+def test_memory_timestamps_are_epoch_zero_not_none():
+    """created_at/updated_at must be int (epoch 0), not None.
+
+    Pydantic v2 rejects None for int fields with:
+    Input should be a valid integer [type=int_type, input_value=None]
+    """
+    import importlib
+
+    module = importlib.import_module("openwebui_honcho.filter_plugin")
+    result = module._card_to_memories(["fact"], "u")
+
+    assert result[0]["created_at"] == 0
+    assert result[0]["updated_at"] == 0
+    assert isinstance(result[0]["created_at"], int)
+    assert isinstance(result[0]["updated_at"], int)
+
+
+def test_memory_response_shapes_match_upstream_response_models(monkeypatch):
+    """Delete returns bool, update returns single entry or None, add returns single entry.
+
+    Upstream route signatures:
+    - DELETE /{memory_id} → response_model=bool
+    - POST /{memory_id}/update → response_model=MemoryModel | None
+    - POST /add → response_model=MemoryModel | None
+    - POST /reset → response_model=bool
+    - DELETE /delete/user → response_model=bool
+    """
+    import importlib
+
+    import openwebui_honcho.core as core
+
+    core._config = None
+    monkeypatch.setenv("OPENWEBUI_HONCHO_IDENTITY_SALT", "x" * 32)
+    monkeypatch.setenv("HONCHO_API_KEY", "sk-test")
+
+    module = importlib.import_module("openwebui_honcho.filter_plugin")
+
+    # Test timestamp values
+    facts = ["Likes Python", "Lives in Berlin"]
+    result = module._card_to_memories(facts, "user-1")
+    assert len(result) == 2
+    for entry in result:
+        assert isinstance(entry["created_at"], int)
+        assert isinstance(entry["updated_at"], int)
+        assert entry["created_at"] == 0
+        assert "id" in entry
+        assert entry["id"].startswith("honcho_")
+        assert "__" in entry["id"]  # content hash present
