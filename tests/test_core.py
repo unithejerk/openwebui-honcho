@@ -320,3 +320,107 @@ async def test_capture_locks_serialized_and_evict_oldest(monkeypatch):
         while len(service.__class__._capture_locks) > 1:
             del service.__class__._capture_locks[next(iter(service.__class__._capture_locks))]
     assert ("u", "c0") not in service.__class__._capture_locks
+
+
+def test_extract_text_truncates_plain_strings():
+    """Plain string content is capped at MAX_CONTENT_LENGTH, same as list content."""
+    from openwebui_honcho.core import MAX_CONTENT_LENGTH, extract_text
+
+    short = "hello"
+    assert extract_text(short) == "hello"
+
+    long = "x" * (MAX_CONTENT_LENGTH + 500)
+    result = extract_text(long)
+    assert len(result) == MAX_CONTENT_LENGTH
+    assert result.startswith("xxx")  # truncated, not garbled
+
+
+@pytest.mark.asyncio
+async def test_search_all_sorts_by_timestamp_descending(monkeypatch):
+    """sender='all' merges and sorts results by created_at descending."""
+    from openwebui_honcho.core import HonchoService, RuntimeConfig
+
+    SALT = "a" * 32
+    service = HonchoService(RuntimeConfig(None, None, "workspace", SALT, "honcho_memory", 30, 2))
+
+    class Msg:
+        def __init__(self, id, content, created_at):
+            self.id = id
+            self.content = content
+            self.created_at = created_at
+
+    class FakePeerAio:
+        def __init__(self, peer_id, messages):
+            self.peer_id = peer_id
+            self._messages = messages
+
+        async def search(self, query, *, filters=None, limit=10):
+            return self._messages[:limit]
+
+    async def resources(*args):
+        return (
+            SimpleNamespace(id="usr", aio=FakePeerAio("usr", [Msg("m1", "old", "2024-01-01")])),
+            SimpleNamespace(id="ast", aio=FakePeerAio("ast", [Msg("m2", "new", "2025-06-01")])),
+            None,
+            None,
+        )
+
+    monkeypatch.setattr(service, "resources", resources)
+
+    results = await service.search_messages("u", "m", "c", "test", sender="all", limit=10)
+    assert len(results) == 2
+    # "new" (2025) should come before "old" (2024)
+    assert results[0].content == "new"
+    assert results[1].content == "old"
+
+
+def test_circuit_breaker_only_counts_backend_failures(monkeypatch):
+    """record_result(False) increments failure count; normal operation resets it."""
+    import openwebui_honcho.core as core
+
+    # Start clean
+    monkeypatch.setattr(core, "_failure_count", 0)
+    monkeypatch.setattr(core, "_failure_until", 0.0)
+
+    assert core.circuit_allows()
+
+    # Real backend failure
+    core.record_result(False)
+    assert core._failure_count == 1
+
+    # Another failure
+    core.record_result(False)
+    assert core._failure_count == 2
+
+    # Third failure — circuit opens
+    core.record_result(False)
+    assert not core.circuit_allows()
+    assert core._failure_count == 3
+
+    # Success resets
+    core.record_result(True)
+    assert core._failure_count == 0
+    assert core.circuit_allows()
+
+
+@pytest.mark.asyncio
+async def test_tools_valueerror_does_not_count_as_backend_failure(monkeypatch):
+    """Memory-disabled ValueError from _service_and_context must not trip circuit."""
+    import importlib
+
+    monkeypatch.setenv("OPENWEBUI_HONCHO_IDENTITY_SALT", "x" * 32)
+    tools_module = importlib.import_module("openwebui_honcho.tools_plugin")
+
+    import openwebui_honcho.core as core
+
+    monkeypatch.setattr(core, "_failure_count", 0)
+    monkeypatch.setattr(core, "_failure_until", 0.0)
+
+    result = await tools_module.Tools().honcho_context(
+        __user__={"id": "u"},
+        __model__={"id": "m"},
+        __metadata__={"chat_id": "c", "filter_ids": []},  # memory disabled
+    )
+    assert "disabled for this chat" in result
+    # Failure count must not increment — this is a gating decision, not a backend error
+    assert core._failure_count == 0

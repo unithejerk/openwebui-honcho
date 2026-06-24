@@ -9,7 +9,6 @@ license: MIT
 
 import asyncio
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
 from honcho import Honcho
@@ -30,17 +29,36 @@ except ImportError:
 
 LOG_MEM = logging.getLogger("openwebui_honcho.memories")
 
+# Honcho self-card facts do not carry per-fact timestamps — the dreaming agent
+# maintains the card as an ordered list without creation/modification metadata.
+# We expose these fields as None so the frontend can distinguish Honcho-backed
+# memories from ChromaDB memories (which do have timestamps).
+_HONCHO_TIMESTAMP_NONE = None  # explicit: no per-fact timestamp available
+
+
+def _fact_hash(fact: str) -> str:
+    """Return a short stable content hash for staleness detection."""
+    import hashlib
+
+    return hashlib.md5(fact.encode("utf-8")).hexdigest()[:8]
+
 
 def _card_to_memories(facts: list[str], user_id: str) -> list[dict[str, Any]]:
-    """Convert Honcho peer card facts to the memory model shape the frontend expects."""
-    now = datetime.now(UTC).isoformat()
+    """Convert Honcho peer card facts to the memory model shape the frontend expects.
+
+    IDs include both the positional index and a content hash (``honcho_0__a1b2c3d4``)
+    so that stale row mutations can be detected: if the fact at index N no longer
+    matches the hash embedded in the ID, the mutation is rejected rather than
+    silently applied to the wrong fact.
+    """
     return [
         {
-            "id": f"honcho_{i}",
+            "id": f"honcho_{i}__{_fact_hash(fact)}",
             "content": fact,
             "user_id": user_id,
-            "created_at": now,
-            "updated_at": now,
+            "created_at": _HONCHO_TIMESTAMP_NONE,
+            "updated_at": _HONCHO_TIMESTAMP_NONE,
+            "source": "honcho",
         }
         for i, fact in enumerate(facts)
     ]
@@ -92,7 +110,7 @@ if _HAS_OPENWEBUI:
             top_k=form_data.k or 3,
         )
         return {
-            "ids": [[f"honcho_{i}" for i in range(len(results))]],
+            "ids": [[f"honcho_{i}__{_fact_hash(r)}" for i, r in enumerate(results)]],
             "documents": [results],
             "metadatas": [[{} for _ in results]],
             # Honcho SDK v2.1.2 does not return distance/similarity scores for
@@ -114,7 +132,7 @@ if _HAS_OPENWEBUI:
         service = HonchoService(config)
 
         def editor(facts: list[str]) -> list[str]:
-            index = _memory_index(memory_id, len(facts))
+            index = _memory_index(memory_id, facts)
             if index is not None:
                 facts.pop(index)
             return facts
@@ -136,7 +154,7 @@ if _HAS_OPENWEBUI:
         service = HonchoService(config)
 
         def editor(facts: list[str]) -> list[str]:
-            index = _memory_index(memory_id, len(facts))
+            index = _memory_index(memory_id, facts)
             if index is not None:
                 facts[index] = form_data.content
             return facts
@@ -151,17 +169,38 @@ if _HAS_OPENWEBUI:
         await service.edit_user_peer_card(user.id, lambda _card: [])
         return {"ok": True}
 
-    def _memory_index(memory_id: str, length: int) -> int | None:
-        """Parse the integer index from a honcho_N memory id if valid."""
+    def _memory_index(memory_id: str, facts: list[str]) -> int | None:
+        """Parse and validate a honcho_N__hash memory ID against the current facts.
+
+        Returns the validated positional index, or ``None`` if the ID is malformed,
+        out of range, or the embedded content hash no longer matches the fact at
+        that position (stale data — the self-card changed between reads).
+        """
         if not memory_id.startswith("honcho_"):
             return None
         try:
-            index = int(memory_id[len("honcho_") :])
-            if 0 <= index < length:
-                return index
+            rest = memory_id[len("honcho_") :]
+            if "__" in rest:
+                idx_str, expected_hash = rest.split("__", 1)
+            else:
+                # Backward-compat: old honcho_N format without hash verification
+                idx_str, expected_hash = rest, None
+            index = int(idx_str)
+            if not (0 <= index < len(facts)):
+                return None
+            if expected_hash is not None:
+                actual_hash = _fact_hash(facts[index])
+                if actual_hash != expected_hash:
+                    LOG_MEM.debug(
+                        "Stale memory mutation rejected: index=%d expected_hash=%s actual_hash=%s",
+                        index,
+                        expected_hash,
+                        actual_hash,
+                    )
+                    return None
+            return index
         except ValueError:
-            pass
-        return None
+            return None
 
     def _replace_memory_routes():
         """Replace built-in /api/v1/memories route handlers with Honcho-backed versions.
@@ -412,6 +451,11 @@ class Filter:
                 span.set_attribute("honcho.injected", injected)
                 LOG.debug("Honcho inlet completed injected=%s", injected)
                 return body
+            except ValueError:
+                # request_context validation failure — not a backend error
+                set_span_status(span)
+                LOG.debug("Honcho inlet skipped: invalid request context")
+                return original
             except Exception as exc:
                 record_result(success=False)
                 set_span_status(span, exc)
@@ -475,6 +519,10 @@ class Filter:
                 record_result(success=True)
                 span.set_attribute("honcho.persisted_count", persisted)
                 LOG.debug("Honcho outlet completed persisted=%s", persisted)
+            except ValueError:
+                # request_context validation failure — not a backend error
+                set_span_status(span)
+                LOG.debug("Honcho outlet skipped: invalid request context")
             except Exception as exc:
                 record_result(success=False)
                 set_span_status(span, exc)

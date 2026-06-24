@@ -58,6 +58,14 @@ class Tools:
                 span.set_attribute("honcho.has_result", bool(result))
                 LOG.debug("Honcho tool honcho_context completed")
                 return result[: self.valves.output_character_limit]
+            except ValueError as exc:
+                set_span_status(span)
+                LOG.debug("Honcho tool honcho_context skipped: %s", exc)
+                return safe_tool_error(exc)
+            except CircuitOpenError as exc:
+                set_span_status(span)
+                LOG.debug("Honcho tool honcho_context skipped: circuit open")
+                return safe_tool_error(exc)
             except Exception as exc:
                 record_result(success=False)
                 LOG.error(
@@ -102,6 +110,14 @@ class Tools:
                 return (text or "No matching conclusions found.")[
                     : self.valves.output_character_limit
                 ]
+            except ValueError as exc:
+                set_span_status(span)
+                LOG.debug("Honcho tool honcho_search_conclusions skipped: %s", exc)
+                return safe_tool_error(exc)
+            except CircuitOpenError as exc:
+                set_span_status(span)
+                LOG.debug("Honcho tool honcho_search_conclusions skipped: circuit open")
+                return safe_tool_error(exc)
             except Exception as exc:
                 record_result(success=False)
                 LOG.error(
@@ -170,6 +186,14 @@ class Tools:
                 span.set_attribute("honcho.result_count", len(results))
                 LOG.debug("Honcho tool honcho_search_messages completed")
                 return "\n".join(lines)[: self.valves.output_character_limit]
+            except ValueError as exc:
+                set_span_status(span)
+                LOG.debug("Honcho tool honcho_search_messages skipped: %s", exc)
+                return safe_tool_error(exc)
+            except CircuitOpenError as exc:
+                set_span_status(span)
+                LOG.debug("Honcho tool honcho_search_messages skipped: circuit open")
+                return safe_tool_error(exc)
             except Exception as exc:
                 record_result(success=False)
                 LOG.error(
@@ -233,6 +257,14 @@ class Tools:
                 return ("\n\n".join(sections) or "No session memory available.")[
                     : self.valves.output_character_limit
                 ]
+            except ValueError as exc:
+                set_span_status(span)
+                LOG.debug("Honcho tool honcho_session skipped: %s", exc)
+                return safe_tool_error(exc)
+            except CircuitOpenError as exc:
+                set_span_status(span)
+                LOG.debug("Honcho tool honcho_session skipped: circuit open")
+                return safe_tool_error(exc)
             except Exception as exc:
                 record_result(success=False)
                 LOG.error(
@@ -279,6 +311,14 @@ class Tools:
                 span.set_attribute("honcho.result_length", len(result))
                 LOG.debug("Honcho tool honcho_ask completed")
                 return result[: self.valves.output_character_limit]
+            except ValueError as exc:
+                set_span_status(span)
+                LOG.debug("Honcho tool honcho_ask skipped: %s", exc)
+                return safe_tool_error(exc)
+            except CircuitOpenError as exc:
+                set_span_status(span)
+                LOG.debug("Honcho tool honcho_ask skipped: circuit open")
+                return safe_tool_error(exc)
             except Exception as exc:
                 record_result(success=False)
                 LOG.error(

@@ -440,3 +440,55 @@ def test_generated_plugins_are_importable():
         assert spec and spec.loader
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+
+
+def test_memory_ui_ids_include_content_hash():
+    """Memory IDs use honcho_N__hash format for staleness detection."""
+    import importlib
+
+    module = importlib.import_module("openwebui_honcho.filter_plugin")
+    facts = ["Likes Python", "Lives in Berlin"]
+    result = module._card_to_memories(facts, "user-1")
+    assert len(result) == 2
+    for i, entry in enumerate(result):
+        assert entry["id"].startswith(f"honcho_{i}__")
+        assert len(entry["id"]) > len(f"honcho_{i}__")  # hash is present
+        assert entry["source"] == "honcho"
+        assert entry["created_at"] is None
+        assert entry["updated_at"] is None
+
+
+def test_memory_index_validates_content_hash():
+    """_memory_index returns the index when hash matches, None when stale."""
+    import importlib
+
+    module = importlib.import_module("openwebui_honcho.filter_plugin")
+    facts = ["Likes Python", "Lives in Berlin"]
+
+    # Valid ID with matching hash
+    valid_id = module._card_to_memories(facts, "u")[0]["id"]
+    assert module._memory_index(valid_id, facts) == 0
+
+    # Stale: hash from "Likes Python" but fact changed to "Likes Java"
+    stale_facts = ["Likes Java", "Lives in Berlin"]
+    assert module._memory_index(valid_id, stale_facts) is None
+
+    # Out of range
+    bad_id = f"honcho_{99}__deadbeef"
+    assert module._memory_index(bad_id, facts) is None
+
+    # Malformed
+    assert module._memory_index("not_honcho_0__abc", facts) is None
+
+
+def test_memory_index_backward_compat():
+    """Old honcho_N format (no hash) still works for existing deployments."""
+    import importlib
+
+    module = importlib.import_module("openwebui_honcho.filter_plugin")
+    facts = ["Likes Python", "Lives in Berlin"]
+    old_style_id = "honcho_0"
+    assert module._memory_index(old_style_id, facts) == 0
+
+    old_style_id_1 = "honcho_1"
+    assert module._memory_index(old_style_id_1, facts) == 1

@@ -322,7 +322,13 @@ def is_memory_globally_enabled(__user__: dict[str, Any] | None) -> bool:
 def extract_text(content: Any) -> str:
     """Extract plain text while ignoring images and unsupported content blocks."""
     if isinstance(content, str):
-        return content.strip()
+        text = content.strip()
+        if len(text) > MAX_CONTENT_LENGTH:
+            LOG.warning(
+                "Truncating message content from %d to %d chars", len(text), MAX_CONTENT_LENGTH
+            )
+            text = text[:MAX_CONTENT_LENGTH]
+        return text
     if not isinstance(content, list):
         return ""
     parts = [
@@ -852,7 +858,19 @@ class HonchoService:
         chat_id: str,
         messages: list[dict[str, Any]],
     ) -> int:
-        """Persist unseen completed messages after stripping injected context."""
+        """Persist unseen completed messages after stripping injected context.
+
+        Deduplication is best-effort: we query for an existing message with the
+        same event_id before inserting, but this is a read-then-write pattern
+        protected only by an in-process asyncio.Lock.  In multi-worker or
+        multi-replica Open WebUI deployments two workers may both see no existing
+        message and both insert, producing a duplicate.  Honcho's dreaming agent
+        handles duplicate content gracefully at the representation level, and
+        the event_id in message metadata allows post-hoc identification of
+        duplicates if cleanup is ever needed.  True cross-worker atomicity would
+        require an idempotency key or server-side unique constraint not available
+        in the Honcho v2.1.2 API.
+        """
         session_key = (user_id, chat_id)
         cls = self.__class__
         async with cls._capture_locks_lock:
@@ -1018,17 +1036,29 @@ class HonchoService:
                         user_id, model_id, chat_id
                     )
                     seen: set[str] = set()
-                    results: list[Any] = []
+                    merged: list[Any] = []
                     for peer in (user_peer, assistant_peer):
-                        for message in await peer.aio.search(
-                            query, filters=filters, limit=limit
-                        ):
+                        for message in await peer.aio.search(query, filters=filters, limit=limit):
                             message_id = getattr(message, "id", None)
                             if message_id is None:
-                                results.append(message)
+                                merged.append(message)
                             elif message_id not in seen:
                                 seen.add(message_id)
-                                results.append(message)
+                                merged.append(message)
+
+                    # Sort by created_at descending so the most recent messages
+                    # appear first.  Messages without a timestamp sort last.
+                    def _sort_key(m: Any) -> Any:
+                        ts = getattr(m, "created_at", None)
+                        if ts is None:
+                            return ()
+                        try:
+                            return (ts,)
+                        except Exception:
+                            return ()
+
+                    merged.sort(key=_sort_key, reverse=True)
+                    results = merged
                 span.set_attribute("honcho.result_count", len(results))
                 set_span_status(span)
                 return results[:limit]

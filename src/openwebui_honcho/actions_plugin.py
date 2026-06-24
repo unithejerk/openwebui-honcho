@@ -152,6 +152,14 @@ class Action:
                     )
                     return {"ok": True, "message": f"Deleted {deleted} conclusions."}
                 return {"ok": False, "message": "Unknown Honcho action."}
+            except ValueError as exc:
+                set_span_status(span)
+                LOG.debug("Honcho action skipped: %s", exc)
+                return {"ok": False, "message": safe_tool_error(exc)}
+            except CircuitOpenError as exc:
+                set_span_status(span)
+                LOG.debug("Honcho action skipped: circuit open")
+                return {"ok": False, "message": safe_tool_error(exc)}
             except Exception as exc:
                 record_result(success=False)
                 set_span_status(span, exc)
