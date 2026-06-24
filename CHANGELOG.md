@@ -1,10 +1,28 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.2.0] — 2026-06-15
+### Added
+- README restructured for OSS readability — table of contents, Why Honcho comparison section, Getting Help section
+- Contributor Covenant Code of Conduct (v3.0)
+- Wiki with How Memory Works, Deployment Patterns, Troubleshooting, and Identity & Privacy pages
+
+### Changed
+- README CI badge uncommented, AI-agent callout moved to bottom, status badge added
+- CONTRIBUTING.md updated with Conventional Commits and Keep a Changelog requirements
+
+### Removed
+- `HonchoService.delete_matching_conclusions` — dead code, never called
+
+### Fixed
+- `search_messages` sender="all" under-returned results for odd limit values
+
+## [0.2.0] - 2026-06-15
 
 ### Added
 - Native memory UI integration — Settings → Personalization → Memory backed by `user_peer.card()`
@@ -33,7 +51,7 @@ All notable changes to this project will be documented in this file.
 - ChromaDB response shape in `_honcho_query_memory`
 - Install guide no longer references fictional UI elements
 
-## [0.1.0] — 2026-06-15
+## [0.1.0] - 2026-06-15
 
 ### Added
 - Initial release: Honcho memory plugin for Open WebUI

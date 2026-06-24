@@ -1,9 +1,13 @@
 # Contributing
 
+## Code of Conduct
+
+This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior by opening an issue in the [project repository](https://github.com/unithejerk/openwebui-honcho/issues).
+
 ## Setup
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/unithejerk/openwebui-honcho.git
 cd openwebui-honcho/repo
 python -m venv .venv
 source .venv/bin/activate
@@ -19,6 +23,34 @@ pre-commit install
 - Branch names: `feature/*`, `fix/*`, `docs/*`, `chore/*`
 - Never commit directly to `main`
 
+## Commit messages
+
+This project follows [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). Every commit message must use one of these types:
+
+```
+feat: add honcho_search_messages tool
+fix: correct ChromaDB response shape in query handler
+docs: comprehensive install guide
+chore: bump honcho-ai to 2.1.3
+test: add coverage for session_context
+refactor: extract identity derivation into standalone helper
+```
+
+Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
+
+Breaking changes must include a `!` after the type and a `BREAKING CHANGE:` footer:
+
+```
+feat!: upgrade to Honcho SDK v3
+
+BREAKING CHANGE: the .aio namespace is removed — all async methods are
+now called directly on peer/session objects.
+```
+
+## Changelog
+
+This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Every PR that changes behavior must include a changelog entry under the `[Unreleased]` section in `CHANGELOG.md`. Use the standard categories: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
+
 ## Pull requests
 
 1. Push your branch and open a PR against `main`
@@ -26,28 +58,14 @@ pre-commit install
 3. At least one approving review required before merge
 4. Squash-merge into `main` — keep history linear
 
-## Commit messages
-
-Follow conventional commits:
-
-```
-feat: add honcho_search_messages tool
-fix: correct ChromaDB response shape in query handler
-docs: comprehensive install guide
-chore: bump honcho-ai to 2.1.3
-```
-
-Co-author Claude-generated commits with:
-
-```
-Co-Authored-By: Claude <noreply@anthropic.com>
-```
-
 ## Before submitting
 
 - [ ] `python scripts/generate_plugins.py` — regenerates dist files
 - [ ] `python scripts/generate_plugins.py --check` — verifies dist matches source
 - [ ] `python -m pytest` — all tests pass
+- [ ] `ruff format --check src scripts tests` — formatting
+- [ ] `ruff check src scripts tests` — linting
+- [ ] Changelog entry added under `[Unreleased]` in `CHANGELOG.md`
 - [ ] New code follows existing patterns (fail-open, safe_tool_error, circuit breaker)
 - [ ] New HonchoService methods are added to the appropriate plugin (tools, actions, or filter)
 
@@ -71,10 +89,6 @@ tests/
 ```
 
 See [AGENTS.md](AGENTS.md) for detailed architecture and design rules.
-
-## Environment variables
-
-See `.env.example` for all required variables. `OPENWEBUI_HONCHO_IDENTITY_SALT` must be at least 32 random characters — this is the HMAC key for deriving opaque peer/session IDs.
 
 ## License
 
