@@ -243,6 +243,11 @@ if _HAS_OPENWEBUI:
         Only activates when Honcho is configured (API key present). Rebuilds both
         route.endpoint and route.dependant because FastAPI resolves dependencies
         from dependant.call (set at init time), not from route.endpoint at call time.
+
+        FastAPI nests routes from ``app.include_router(prefix=...)`` inside
+        ``_IncludedRouter`` wrappers — those routes have bare paths (e.g. ``/``,
+        ``/add``).  We walk both top-level ``Route`` objects and the routes inside
+        any ``_IncludedRouter`` whose prefix matches our target path space.
         """
         from fastapi.dependencies.utils import (
             get_dependant,
@@ -255,36 +260,53 @@ if _HAS_OPENWEBUI:
             return  # Honcho not configured, leave built-in handlers alone
 
         route_map = {
-            ("/api/v1/memories/", "GET"): _honcho_get_memories,
-            ("/api/v1/memories/add", "POST"): _honcho_add_memory,
-            ("/api/v1/memories/query", "POST"): _honcho_query_memory,
-            ("/api/v1/memories/reset", "POST"): _honcho_reset_memories,
-            ("/api/v1/memories/delete/user", "DELETE"): _honcho_delete_user_memories,
-            ("/api/v1/memories/{memory_id}/update", "POST"): _honcho_update_memory,
-            ("/api/v1/memories/{memory_id}", "DELETE"): _honcho_delete_memory,
+            ("/", "GET"): _honcho_get_memories,
+            ("/add", "POST"): _honcho_add_memory,
+            ("/query", "POST"): _honcho_query_memory,
+            ("/reset", "POST"): _honcho_reset_memories,
+            ("/delete/user", "DELETE"): _honcho_delete_user_memories,
+            ("/{memory_id}/update", "POST"): _honcho_update_memory,
+            ("/{memory_id}", "DELETE"): _honcho_delete_memory,
         }
 
+        def _replace_one(route, handler):
+            route.endpoint = handler
+            route.dependant = get_dependant(path=route.path_format, call=handler, scope="function")
+            for depends in (route.dependencies or [])[::-1]:
+                route.dependant.dependencies.insert(
+                    0,
+                    get_parameterless_sub_dependant(depends=depends, path=route.path_format),
+                )
+            route._flat_dependant = get_flat_dependant(route.dependant)
+            return True
+
         replaced = 0
-        for route in app.routes:
-            if not hasattr(route, "path"):
+        for entry in app.routes:
+            # Direct routes (e.g. when a router is included without prefix, or
+            # routes registered directly on the app).
+            if hasattr(entry, "path"):
+                methods = entry.methods or set()
+                for (path, method), handler in route_map.items():
+                    if entry.path == path and method in methods:
+                        if _replace_one(entry, handler):
+                            replaced += 1
+                        break
                 continue
-            methods = route.methods or set()
-            for (path, method), handler in route_map.items():
-                if route.path == path and method in methods:
-                    route.endpoint = handler
-                    route.dependant = get_dependant(
-                        path=route.path_format, call=handler, scope="function"
-                    )
-                    for depends in (route.dependencies or [])[::-1]:
-                        route.dependant.dependencies.insert(
-                            0,
-                            get_parameterless_sub_dependant(
-                                depends=depends, path=route.path_format
-                            ),
-                        )
-                    route._flat_dependant = get_flat_dependant(route.dependant)
-                    replaced += 1
-                    break
+
+            # Nested routes via app.include_router(prefix=...).
+            # FastAPI wraps these in an _IncludedRouter whose original_router
+            # holds the bare-path routes.
+            if hasattr(entry, "original_router"):
+                prefix = getattr(getattr(entry, "include_context", None), "prefix", "")
+                if not prefix or not prefix.startswith("/api/v1/memories"):
+                    continue
+                for route in entry.original_router.routes:
+                    methods = route.methods or set()
+                    for (path, method), handler in route_map.items():
+                        if route.path == path and method in methods:
+                            if _replace_one(route, handler):
+                                replaced += 1
+                            break
 
         expected = len(route_map)
         if replaced < expected:

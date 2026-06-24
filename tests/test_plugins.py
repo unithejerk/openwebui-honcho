@@ -121,8 +121,8 @@ async def test_tools_respect_global_memory_toggle(monkeypatch):
     assert "disabled globally" in result
 
 
-def test_memory_route_map_is_complete(monkeypatch):
-    """All Open WebUI memory endpoints have Honcho replacements."""
+def test_memory_route_map_is_complete_direct_routes(monkeypatch):
+    """All 7 memory endpoints are replaced when routes are directly in app.routes."""
     import importlib
     import sys
     import types
@@ -141,13 +141,13 @@ def test_memory_route_map_is_complete(monkeypatch):
 
     class FakeApp:
         routes = [
-            FakeRoute("/api/v1/memories/", {"GET"}),
-            FakeRoute("/api/v1/memories/add", {"POST"}),
-            FakeRoute("/api/v1/memories/query", {"POST"}),
-            FakeRoute("/api/v1/memories/reset", {"POST"}),
-            FakeRoute("/api/v1/memories/delete/user", {"DELETE"}),
-            FakeRoute("/api/v1/memories/{memory_id}/update", {"POST"}),
-            FakeRoute("/api/v1/memories/{memory_id}", {"DELETE"}),
+            FakeRoute("/", {"GET"}),
+            FakeRoute("/add", {"POST"}),
+            FakeRoute("/query", {"POST"}),
+            FakeRoute("/reset", {"POST"}),
+            FakeRoute("/delete/user", {"DELETE"}),
+            FakeRoute("/{memory_id}/update", {"POST"}),
+            FakeRoute("/{memory_id}", {"DELETE"}),
         ]
 
     def fake_get_dependant(*args, **kwargs):
@@ -167,7 +167,6 @@ def test_memory_route_map_is_complete(monkeypatch):
         dep_utils, "get_parameterless_sub_dependant", fake_get_parameterless_sub_dependant
     )
 
-    # Create fake open_webui package tree so the guarded imports succeed.
     fake_main = types.SimpleNamespace(app=FakeApp())
     fake_auth = types.SimpleNamespace(get_verified_user=lambda: None)
     fake_utils = types.SimpleNamespace(auth=fake_auth)
@@ -195,12 +194,10 @@ def test_memory_route_map_is_complete(monkeypatch):
     monkeypatch.setenv("HONCHO_API_KEY", "sk-test")
     monkeypatch.setenv("OPENWEBUI_HONCHO_IDENTITY_SALT", "x" * 32)
 
-    # Ensure a fresh RuntimeConfig is loaded with the API key present.
     import openwebui_honcho.core as core_module
 
     core_module._config = None
 
-    # Reload filter_plugin with the fake environment so _HAS_OPENWEBUI is True.
     import openwebui_honcho.filter_plugin as module
 
     importlib.reload(module)
@@ -212,8 +209,213 @@ def test_memory_route_map_is_complete(monkeypatch):
 
     assert len(replaced) == 7
     paths = {r[0] for r in replaced}
-    assert "/api/v1/memories/reset" in paths
-    assert "/api/v1/memories/{memory_id}/update" in paths
+    assert "/reset" in paths
+    assert "/{memory_id}/update" in paths
+
+
+def test_memory_route_replacement_handles_included_router(monkeypatch):
+    """Routes nested inside _IncludedRouter (app.include_router with prefix)
+    are still found and replaced — this matches real Open WebUI behaviour."""
+    import importlib
+    import sys
+    import types
+
+    from pydantic import BaseModel
+
+    class FakeRoute:
+        def __init__(self, path, methods):
+            self.path = path
+            self.path_format = path
+            self.methods = methods
+            self.endpoint = None
+            self.dependant = None
+            self.dependencies = []
+            self._flat_dependant = None
+
+    # Simulate how Open WebUI actually serves the memories router:
+    #   app.include_router(memories.router, prefix='/api/v1/memories')
+    # This wraps routes inside an _IncludedRouter.
+    memory_routes = [
+        FakeRoute("/", {"GET"}),
+        FakeRoute("/add", {"POST"}),
+        FakeRoute("/query", {"POST"}),
+        FakeRoute("/reset", {"POST"}),
+        FakeRoute("/delete/user", {"DELETE"}),
+        FakeRoute("/{memory_id}/update", {"POST"}),
+        FakeRoute("/{memory_id}", {"DELETE"}),
+    ]
+    original_router = types.SimpleNamespace(routes=memory_routes)
+    include_context = types.SimpleNamespace(prefix="/api/v1/memories")
+    included = types.SimpleNamespace(
+        original_router=original_router, include_context=include_context
+    )
+
+    class FakeApp:
+        routes = [included]
+
+    def fake_get_dependant(*args, **kwargs):
+        return SimpleNamespace(dependencies=[])
+
+    def fake_get_flat_dependant(*args, **kwargs):
+        return None
+
+    def fake_get_parameterless_sub_dependant(*args, **kwargs):
+        return None
+
+    import fastapi.dependencies.utils as dep_utils
+
+    monkeypatch.setattr(dep_utils, "get_dependant", fake_get_dependant)
+    monkeypatch.setattr(dep_utils, "get_flat_dependant", fake_get_flat_dependant)
+    monkeypatch.setattr(
+        dep_utils, "get_parameterless_sub_dependant", fake_get_parameterless_sub_dependant
+    )
+
+    fake_main = types.SimpleNamespace(app=FakeApp())
+    fake_auth = types.SimpleNamespace(get_verified_user=lambda: None)
+    fake_utils = types.SimpleNamespace(auth=fake_auth)
+
+    class AddMemoryForm(BaseModel):
+        content: str
+
+    class QueryMemoryForm(BaseModel):
+        content: str
+        k: int | None = 1
+
+    fake_memories = types.SimpleNamespace(
+        AddMemoryForm=AddMemoryForm, QueryMemoryForm=QueryMemoryForm
+    )
+    fake_routers = types.SimpleNamespace(memories=fake_memories)
+    fake_open_webui = types.SimpleNamespace(main=fake_main, utils=fake_utils, routers=fake_routers)
+
+    sys.modules["open_webui"] = fake_open_webui
+    sys.modules["open_webui.main"] = fake_main
+    sys.modules["open_webui.utils"] = fake_utils
+    sys.modules["open_webui.utils.auth"] = fake_auth
+    sys.modules["open_webui.routers"] = fake_routers
+    sys.modules["open_webui.routers.memories"] = fake_memories
+
+    monkeypatch.setenv("HONCHO_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENWEBUI_HONCHO_IDENTITY_SALT", "x" * 32)
+
+    import openwebui_honcho.core as core_module
+
+    core_module._config = None
+
+    import openwebui_honcho.filter_plugin as module
+
+    importlib.reload(module)
+
+    # Routes inside the original router should now have replaced endpoints
+    replaced = []
+    for route in original_router.routes:
+        if route.endpoint is not None:
+            replaced.append((route.path, route.endpoint.__name__))
+
+    assert len(replaced) == 7
+    paths = {r[0] for r in replaced}
+    assert "/" in paths
+    assert "/{memory_id}" in paths
+    assert "/reset" in paths
+
+
+def test_included_router_with_non_matching_prefix_is_skipped(monkeypatch):
+    """Included routers that don't target /api/v1/memories are left untouched."""
+    import importlib
+    import sys
+    import types
+
+    from pydantic import BaseModel
+
+    class FakeRoute:
+        def __init__(self, path, methods, endpoint_name="original"):
+            self.path = path
+            self.path_format = path
+            self.methods = methods
+            self.endpoint = lambda: None
+            self.endpoint.__name__ = endpoint_name
+            self.dependant = None
+            self.dependencies = []
+            self._flat_dependant = None
+
+    # A non-memory router — should not be touched
+    other_routes = [
+        FakeRoute("/", {"GET"}, endpoint_name="other_handler"),
+    ]
+    memory_routes = [
+        FakeRoute("/", {"GET"}, endpoint_name="memory_handler"),
+    ]
+
+    other_router = types.SimpleNamespace(routes=other_routes)
+    memory_router = types.SimpleNamespace(routes=memory_routes)
+
+    other_ctx = types.SimpleNamespace(prefix="/api/v1/chats")
+    memory_ctx = types.SimpleNamespace(prefix="/api/v1/memories")
+
+    included_other = types.SimpleNamespace(original_router=other_router, include_context=other_ctx)
+    included_memory = types.SimpleNamespace(
+        original_router=memory_router, include_context=memory_ctx
+    )
+
+    class FakeApp:
+        routes = [included_other, included_memory]
+
+    def fake_get_dependant(*args, **kwargs):
+        return SimpleNamespace(dependencies=[])
+
+    def fake_get_flat_dependant(*args, **kwargs):
+        return None
+
+    def fake_get_parameterless_sub_dependant(*args, **kwargs):
+        return None
+
+    import fastapi.dependencies.utils as dep_utils
+
+    monkeypatch.setattr(dep_utils, "get_dependant", fake_get_dependant)
+    monkeypatch.setattr(dep_utils, "get_flat_dependant", fake_get_flat_dependant)
+    monkeypatch.setattr(
+        dep_utils, "get_parameterless_sub_dependant", fake_get_parameterless_sub_dependant
+    )
+
+    fake_main = types.SimpleNamespace(app=FakeApp())
+    fake_auth = types.SimpleNamespace(get_verified_user=lambda: None)
+    fake_utils = types.SimpleNamespace(auth=fake_auth)
+
+    class AddMemoryForm(BaseModel):
+        content: str
+
+    class QueryMemoryForm(BaseModel):
+        content: str
+        k: int | None = 1
+
+    fake_memories = types.SimpleNamespace(
+        AddMemoryForm=AddMemoryForm, QueryMemoryForm=QueryMemoryForm
+    )
+    fake_routers = types.SimpleNamespace(memories=fake_memories)
+    fake_open_webui = types.SimpleNamespace(main=fake_main, utils=fake_utils, routers=fake_routers)
+
+    sys.modules["open_webui"] = fake_open_webui
+    sys.modules["open_webui.main"] = fake_main
+    sys.modules["open_webui.utils"] = fake_utils
+    sys.modules["open_webui.utils.auth"] = fake_auth
+    sys.modules["open_webui.routers"] = fake_routers
+    sys.modules["open_webui.routers.memories"] = fake_memories
+
+    monkeypatch.setenv("HONCHO_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENWEBUI_HONCHO_IDENTITY_SALT", "x" * 32)
+
+    import openwebui_honcho.core as core_module
+
+    core_module._config = None
+
+    import openwebui_honcho.filter_plugin as module
+
+    importlib.reload(module)
+
+    # Memory route should be replaced
+    assert memory_routes[0].endpoint.__name__ == "_honcho_get_memories"
+
+    # Other route should NOT be touched
+    assert other_routes[0].endpoint.__name__ == "other_handler"
 
 
 @pytest.mark.asyncio
