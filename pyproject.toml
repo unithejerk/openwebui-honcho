@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openwebui-honcho"
+version = "0.1.0"
+description = "Honcho memory integration for Open WebUI"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "honcho-ai==2.1.2",
+  "opentelemetry-api>=1.20",
+  "opentelemetry-sdk>=1.20",
+  "opentelemetry-instrumentation-logging>=0.40b0",
+  "opentelemetry-instrumentation-httpx>=0.40b0",
+  "pydantic>=2.0",
+  "requests>=2.25",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openwebui_honcho"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "ASYNC"]
+# F403/F405: star imports are intentional — core.py is concatenated into the
+# generated plugin files by scripts/generate_plugins.py.
+ignore = ["E501", "UP006", "UP007", "F403", "F405"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
